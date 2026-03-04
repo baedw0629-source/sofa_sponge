@@ -19,8 +19,8 @@ sponge_db = load_data()
 # --- 2. 사이드바: 시스템 기준 설정 ---
 st.sidebar.header("⚙️ 시스템 기준 설정")
 # 요청하신 대로 명칭 변경
-h_cut_cost = st.sidebar.number_input("수평재단비 (기존 AO77)", value=20.0)
-v_cut_cost = st.sidebar.number_input("수직재단비 (기존 AQ77)", value=11.0)
+h_cut_cost = st.sidebar.number_input("수평재단비)", value=20.0)
+v_cut_cost = st.sidebar.number_input("수직재단비)", value=11.0)
 
 loss_rate = st.sidebar.slider("기본 로스율 (%)", 0, 20, 5) / 100
 admin_rate = st.sidebar.slider("일반관리비율 (%)", 0, 10, 5) / 100
@@ -111,3 +111,4 @@ if st.button("🚀 전체 단가 계산하기"):
     # 엑셀/CSV로 결과 내보내기
     csv = final_df.to_csv(index=False).encode('utf-8-sig')
     st.download_button("📥 계산 결과 다운로드 (CSV)", data=csv, file_name="sponge_costs.csv", mime="text/csv")
+
