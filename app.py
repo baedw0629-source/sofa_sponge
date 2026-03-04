@@ -8,12 +8,11 @@ st.set_page_config(page_title="스펀지 산출 TOOL", layout="wide")
 @st.cache_data
 def load_data():
     try:
-        # 파일명을 spongematerials.csv로 변경하여 로드
         df = pd.read_csv('spongematerials.csv')
         return df
     except:
         st.error("spongematerials.csv 파일을 찾을 수 없습니다. 파일명과 컬럼명을 확인해주세요.")
-        return pd.DataFrame(columns=['재질', '밀도', '경도', '가공업체 단가', '발포업체 단가'])
+        return pd.DataFrame(columns=['재질', '밀도', '경도', '가공업체단가', '발포업체단가'])
 
 sponge_db = load_data()
 
@@ -125,3 +124,4 @@ if st.button("🚀 산출 실행"):
     
     csv = final_df.to_csv(index=False).encode('utf-8-sig')
     st.download_button("📥 결과 CSV 저장", data=csv, file_name="sponge_calc_result.csv", mime="text/csv")
+
