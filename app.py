@@ -9,7 +9,7 @@ st.set_page_config(page_title="스펀지 일괄 단가 산출기", layout="wide"
 def load_data():
     try:
         # 6,000개 자재 데이터 로드
-        df = pd.read_csv('materials.csv')
+        df = pd.read_csv('spongematerials.csv')
         return df[df['규격구분'].str.contains('스펀지', na=False)]
     except:
         return pd.DataFrame(columns=['자재코드', '자재명', '주거래단가'])
@@ -111,4 +111,5 @@ if st.button("🚀 전체 단가 계산하기"):
     # 엑셀/CSV로 결과 내보내기
     csv = final_df.to_csv(index=False).encode('utf-8-sig')
     st.download_button("📥 계산 결과 다운로드 (CSV)", data=csv, file_name="sponge_costs.csv", mime="text/csv")
+
 
