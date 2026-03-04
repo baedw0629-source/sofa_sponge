@@ -3,113 +3,125 @@ import pandas as pd
 import math
 
 # --- 1. 기본 설정 및 데이터 로드 ---
-st.set_page_config(page_title="스펀지 일괄 단가 산출기", layout="wide")
+st.set_page_config(page_title="스펀지 산출 TOOL", layout="wide")
 
 @st.cache_data
 def load_data():
     try:
-        # 6,000개 자재 데이터 로드
+        # 파일명을 spongematerials.csv로 변경하여 로드
         df = pd.read_csv('spongematerials.csv')
-        return df[df['규격구분'].str.contains('스펀지', na=False)]
+        return df
     except:
-        return pd.DataFrame(columns=['자재코드', '자재명', '주거래단가'])
+        st.error("spongematerials.csv 파일을 찾을 수 없습니다. 파일명과 컬럼명을 확인해주세요.")
+        return pd.DataFrame(columns=['재질', '밀도', '경도', '가공업체 단가', '발포업체 단가'])
 
 sponge_db = load_data()
 
 # --- 2. 사이드바: 시스템 기준 설정 ---
 st.sidebar.header("⚙️ 시스템 기준 설정")
-# 요청하신 대로 명칭 변경
-h_cut_cost = st.sidebar.number_input("수평재단비)", value=20.0)
-v_cut_cost = st.sidebar.number_input("수직재단비)", value=11.0)
+h_cut_cost = st.sidebar.number_input("수평재단비 (원)", value=20.0, step=0.1, format="%.1f")
+v_cut_cost = st.sidebar.number_input("수직재단비 (원)", value=11.0, step=0.1, format="%.1f")
 
-loss_rate = st.sidebar.slider("기본 로스율 (%)", 0, 20, 5) / 100
-admin_rate = st.sidebar.slider("일반관리비율 (%)", 0, 10, 5) / 100
-profit_rate = st.sidebar.slider("이윤율 (%)", 0, 20, 10) / 100
+# 비율 설정 (직접 입력)
+loss_rate_val = st.sidebar.number_input("로스율 (%)", value=5.0, step=0.1, format="%.1f") / 100
+admin_rate_val = st.sidebar.number_input("일반관리비율 (%)", value=5.0, step=0.1, format="%.1f") / 100
+profit_rate_val = st.sidebar.number_input("이윤율 (%)", value=10.0, step=0.1, format="%.1f") / 100
 
-# --- 3. 메인 화면 ---
-st.title("🧽 스펀지 일괄 단가 산출 툴")
-st.caption("엑셀처럼 여러 줄을 입력하여 한 번에 단가를 산출할 수 있습니다.")
+# --- 3. 메인 화면: 엑셀형 입력 창 ---
+st.title("🧽 스펀지 단가 산출 TOOL")
 
-# 입력 데이터프레임 초기화
 if "input_df" not in st.session_state:
     st.session_state.input_df = pd.DataFrame(
         [{
-            "재질명": "재질을 선택하세요", 
+            "선택업체": "진양",
+            "재질": "재질을 선택하세요", 
             "재단방식": "일반", 
-            "업체구분": "가공업체", 
-            "W(O)": 500.0, "D(P)": 400.0, "T(Q)": 300.0, "N(사선)": 0.0, 
-            "평단가": 275.0
+            "W(O)": 500.0, "D(P)": 400.0, "T(Q)": 300.0, "N(사선)": 0.0
         }]
     )
 
-# --- 4. 엑셀형 데이터 에디터 ---
-st.subheader("📝 산출 목록 입력")
-# 재질명 리스트 준비
-material_list = sponge_db['자재명'].unique().tolist() if not sponge_db.empty else ["수동입력"]
+material_list = sponge_db['재질'].unique().tolist() if not sponge_db.empty else ["수동입력"]
 
+st.subheader("📝 산출 목록 입력")
 edited_df = st.data_editor(
     st.session_state.input_df,
-    num_rows="dynamic", # 줄 추가/삭제 가능
+    num_rows="dynamic",
     column_config={
-        "재질명": st.column_config.SelectboxColumn("재질명", options=material_list, width="medium"),
+        "선택업체": st.column_config.SelectboxColumn("선택업체", options=["진양", "폼웍스"], width="small"),
+        "재질": st.column_config.SelectboxColumn("재질", options=material_list, width="medium"),
         "재단방식": st.column_config.SelectboxColumn("재단방식", options=["일반", "2D", "사선", "몰드"]),
-        "업체구분": st.column_config.SelectboxColumn("업체구분", options=["가공업체", "발포업체"]),
+        "W(O)": st.column_config.NumberColumn("W(O)", min_value=0),
+        "D(P)": st.column_config.NumberColumn("D(P)", min_value=0),
+        "T(Q)": st.column_config.NumberColumn("T(Q)", min_value=0),
+        "N(사선)": st.column_config.NumberColumn("N(사선)", min_value=0),
     },
     use_container_width=True,
     key="editor"
 )
 
-# --- 5. 계산 엔진 함수 ---
+# --- 4. 계산 엔진 ---
 def calculate_row(row):
     vol_unit = 303 * 303 * 10
     
-    # 평단가 자동 매칭 (DB에 있을 경우)
-    u_price = row['평단가']
-    if not sponge_db.empty and row['재질명'] in sponge_db['자재명'].values:
-        u_price = sponge_db[sponge_db['자재명'] == row['재질명']]['주거래단가'].values[0]
+    # DB에서 해당 재질 정보 추출
+    material_info = sponge_db[sponge_db['재질'] == row['재질']]
+    
+    if material_info.empty:
+        return pd.Series(["-", "-", 0, 0, 0, 0], 
+                         index=["밀도", "경도", "소요량(평)", "재료비", "가공비", "최종단가"])
 
-    # AF: 소요량
+    density = material_info['밀도'].values[0]
+    hardness = material_info['경도'].values[0]
+    
+    # 업체 선택에 따른 단가 및 계산 방식 결정
+    # 진양 -> 가공업체 단가 사용 및 가공업체 로직 적용
+    # 폼웍스 -> 발포업체 단가 사용 및 발포업체 로직 적용
+    if row['선택업체'] == "진양":
+        u_price = material_info['가공업체 단가'].values[0]
+        calc_mode = "가공업체"
+    else:
+        u_price = material_info['발포업체 단가'].values[0]
+        calc_mode = "발포업체"
+
+    # 1. 소요량(AF)
     if row['재단방식'] == "사선":
         af_qty = (((row['N(사선)'] + row['W(O)']) * row['D(P)'] * row['T(Q)']) / vol_unit) / 2
     else:
         af_qty = (row['W(O)'] * row['D(P)'] * row['T(Q)']) / vol_unit
 
-    # AH: 재료비
-    ah_mat_cost = af_qty * u_price if row['업체구분'] == "발포업체" else af_qty * (1 + loss_rate) * u_price
+    # 2. 재료비(AH)
+    ah_mat_cost = af_qty * u_price if calc_mode == "발포업체" else af_qty * (1 + loss_rate_val) * u_price
 
-    # AI: 가공비 (명칭 변경 반영)
+    # 3. 가공비(AI)
     ai_proc_cost = 0
     if row['재단방식'] == "2D":
         ai_proc_cost = ah_mat_cost * 0.2
-    elif row['업체구분'] != "발포업체":
+    elif calc_mode != "발포업체":
         if row['재단방식'] == "일반":
-            # 수평재단비(h_cut_cost) + 수직재단비(v_cut_cost) 로직
             ai_proc_cost = (row['W(O)']/1000 * row['D(P)']/1000 * h_cut_cost) + (row['W(O)']/1000 * row['D(P)']/1000 * row['T(Q)'] * v_cut_cost)
         elif row['재단방식'] == "사선":
             ai_proc_cost = ((row['N(사선)']+row['W(O)'])/1000 * row['D(P)']/1000 * v_cut_cost * row['T(Q)']) + (row['W(O)']/1000 * row['D(P)']/1000 * h_cut_cost)
 
-    # AJ, AK, AL: 경비, 관리비, 이윤
+    # 4. 경비, 관리비, 이윤 (AJ, AK, AL)
     aj_exp = ai_proc_cost * 0.1
-    ak_admin = 0 if row['업체구분'] == "발포업체" else (ah_mat_cost + ai_proc_cost + aj_exp) * admin_rate
-    al_profit = (ai_proc_cost + aj_exp + ak_admin) * profit_rate
+    ak_admin = 0 if calc_mode == "발포업체" else (ah_mat_cost + ai_proc_cost + aj_exp) * admin_rate_val
+    al_profit = (ai_proc_cost + aj_exp + ak_admin) * profit_rate_val
 
-    # AM: 최종 단가
+    # 5. 최종 단가(AM) - 업체별 단수 처리 반영
     total = ah_mat_cost + ai_proc_cost + aj_exp + ak_admin + al_profit
-    am_price = math.floor(total / 10) * 10 if row['업체구분'] == "발포업체" else round(total / 10) * 10
+    am_price = math.floor(total / 10) * 10 if calc_mode == "발포업체" else round(total / 10) * 10
     
-    return pd.Series([round(af_qty, 2), round(am_price)], index=["소요량(평)", "최종단가(원)"])
+    return pd.Series([density, hardness, round(af_qty, 3), round(ah_mat_cost), round(ai_proc_cost), am_price], 
+                     index=["밀도", "경도", "소요량(평)", "재료비", "가공비", "최종단가"])
 
-# --- 6. 결과 출력 및 다운로드 ---
-if st.button("🚀 전체 단가 계산하기"):
+# --- 5. 결과 출력 ---
+if st.button("🚀 산출 실행"):
     results = edited_df.apply(calculate_row, axis=1)
     final_df = pd.concat([edited_df, results], axis=1)
     
     st.divider()
-    st.subheader("📊 산출 결과")
+    st.subheader("📊 최종 산출 결과")
     st.dataframe(final_df, use_container_width=True)
     
-    # 엑셀/CSV로 결과 내보내기
     csv = final_df.to_csv(index=False).encode('utf-8-sig')
-    st.download_button("📥 계산 결과 다운로드 (CSV)", data=csv, file_name="sponge_costs.csv", mime="text/csv")
-
-
+    st.download_button("📥 결과 CSV 저장", data=csv, file_name="sponge_calc_result.csv", mime="text/csv")
