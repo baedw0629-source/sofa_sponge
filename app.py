@@ -1,0 +1,117 @@
+import streamlit as st
+import pandas as pd
+import math
+
+# --- 1. 기본 설정 및 데이터 로드 ---
+st.set_page_config(page_title="스펀지 단가 산출기", layout="wide")
+
+@st.cache_data
+def load_data():
+    try:
+        # 엔지니어님이 관리하시는 6,000개 자재 데이터를 불러옵니다.
+        df = pd.read_csv('materials.csv')
+        # '규격구분'이 스펀지인 데이터만 필터링합니다.
+        return df[df['규격구분'].str.contains('스펀지', na=False)]
+    except FileNotFoundError:
+        return pd.DataFrame(columns=['자재코드', '자재명', '주거래단가'])
+
+sponge_db = load_data()
+
+# --- 2. 사이드바: 시스템 상수 설정 (BASE_DATA) ---
+st.sidebar.header("⚙️ 시스템 기준 설정")
+ao77 = st.sidebar.number_input("AO77 (헤베당 가공비)", value=20.0)
+aq77 = st.sidebar.number_input("AQ77 (루베당 가공비)", value=11.0)
+loss_rate = st.sidebar.slider("기본 로스율 (%)", 0, 20, 5) / 100
+admin_rate = st.sidebar.slider("일반관리비율 (%)", 0, 10, 5) / 100
+profit_rate = st.sidebar.slider("이윤율 (%)", 0, 20, 10) / 100
+
+# --- 3. 메인 화면: 입력부 ---
+st.title("🧽 스펀지 단가 산출 툴")
+
+col1, col2 = st.columns([1, 1])
+
+with col1:
+    st.subheader("📋 자재 및 업체 선택")
+    if not sponge_db.empty:
+        selected_material = st.selectbox("스펀지 재질 선택", sponge_db['자재명'].unique())
+        # 선택한 재질에 따른 평단가를 자동으로 불러옵니다.
+        unit_price = sponge_db[sponge_db['자재명'] == selected_material]['주거래단가'].values[0]
+        st.info(f"선택된 재질 평단가: {unit_price:,.0f}원")
+    else:
+        st.warning("materials.csv 파일을 찾을 수 없습니다. 수동으로 단가를 입력하세요.")
+        unit_price = st.number_input("평단가 수동 입력", value=275.0)
+
+    supplier = st.radio("입고 업체 구분", ["가공업체", "발포업체"], horizontal=True)
+    cut_type = st.selectbox("재단 방식", ["일반", "2D", "사선", "몰드"])
+
+with col2:
+    st.subheader("📏 규격 입력 (mm)")
+    o_val = st.number_input("W (너비)", value=500.0)
+    p_val = st.number_input("D (깊이)", value=400.0)
+    q_val = st.number_input("T (두께)", value=300.0)
+    
+    n_val = 0.0
+    if cut_type == "사선":
+        n_val = st.number_input("N (사선 너비값)", value=500.0)
+
+# --- 4. 계산 로직 (Engine) ---
+def calculate():
+    vol_unit = 303 * 303 * 10
+    # AF: 소요량
+    if cut_type == "사선":
+        af_qty = (((n_val + o_val) * p_val * q_val) / vol_unit) / 2
+    else:
+        af_qty = (o_val * p_val * q_val) / vol_unit
+
+    # AH: 재료비
+    ah_mat_cost = af_qty * unit_price if supplier == "발포업체" else af_qty * (1 + loss_rate) * unit_price
+
+    # AI: 가공비
+    ai_proc_cost = 0
+    if cut_type == "2D":
+        ai_proc_cost = ah_mat_cost * 0.2
+    elif supplier != "발포업체":
+        if cut_type == "일반":
+            ai_proc_cost = (o_val/1000 * p_val/1000 * ao77) + (o_val/1000 * p_val/1000 * q_val * aq77)
+        elif cut_type == "사선":
+            ai_proc_cost = ((n_val+o_val)/1000 * p_val/1000 * aq77 * q_val) + (o_val/1000 * p_val/1000 * ao77)
+
+    # AJ, AK, AL: 경비, 관리비, 이윤
+    aj_exp = ai_proc_cost * 0.1
+    ak_admin = 0 if supplier == "발포업체" else (ah_mat_cost + ai_proc_cost + aj_exp) * admin_rate
+    al_profit = (ai_proc_cost + aj_exp + ak_admin) * profit_rate
+
+    # AM: 최종 단가 처리
+    total = ah_mat_cost + ai_proc_cost + aj_exp + ak_admin + al_profit
+    am_price = math.floor(total / 10) * 10 if supplier == "발포업체" else round(total / 10) * 10
+    
+    return {
+        "소요량": af_qty, "재료비": ah_mat_cost, "가공비": ai_proc_cost,
+        "경비": aj_exp, "관리비": ak_admin, "이윤": al_profit, "최종단가": am_price
+    }
+
+res = calculate()
+
+# --- 5. 결과 출력 ---
+st.divider()
+c1, c2, c3 = st.columns(3)
+c1.metric("개당 소요량 (평)", f"{res['소요량']:.2f}")
+c2.metric("가공비 상세", f"{res['가공비']:,.0f}원")
+c3.metric("최종 산출 단가 (AM)", f"{res['최종단가']:,.0f}원", delta_color="normal")
+
+# --- 6. 이력 저장 기능 ---
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+if st.button("📑 현재 계산 결과 이력에 추가"):
+    history_item = {
+        "항목명": f"{selected_material if 'selected_material' in locals() else '수동입력'}_{cut_type}",
+        "규격": f"{o_val}x{p_val}x{q_val}",
+        "단가": res['최종단가']
+    }
+    st.session_state.history.append(history_item)
+    st.success("이력에 저장되었습니다.")
+
+if st.session_state.history:
+    st.subheader("📜 산출 이력")
+    st.table(pd.DataFrame(st.session_state.history))
