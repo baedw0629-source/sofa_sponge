@@ -31,7 +31,7 @@ sponge_db = load_data()
 
 # --- 2. 상태(Session State) 관리 ---
 if "input_df" not in st.session_state:
-    # 1번 요청 반영: 수치 입력값을 None으로 설정하여 빈칸으로 시작
+    # 초기 로드 시 빈 데이터프레임 구조 설정
     st.session_state.input_df = pd.DataFrame([{
         "선택업체": "진양", "재질": "선택하세요", "재단방식": "일반",
         "W(사선)": None, "W": None, "D": None, "T": None
@@ -43,28 +43,42 @@ if "last_result" not in st.session_state:
 if "calc_history" not in st.session_state:
     st.session_state.calc_history = {}
 
-# --- 3. 제목 및 시스템 설정 (4번 요청: 스펀지 단가 산출 TOOL 아래 한 줄 배치) ---
+# --- 3. 제목 및 시스템 설정 (가로 배치) ---
 st.title("🧽 스펀지 단가 산출 TOOL")
 
-# 가로 한 줄 배치를 위한 컬럼 구성
+# 1번 요청 반영: 수평재단비 기본값 21.0 설정
 c1, c2, c3, c4, c5 = st.columns(5)
-with c1: h_cut = st.number_input("수평재단비(원)", value=20.0, format="%.1f")
+with c1: h_cut = st.number_input("수평재단비(원)", value=21.0, format="%.1f")
 with c2: v_cut = st.number_input("수직재단비(원)", value=11.0, format="%.1f")
 with c3: loss_rate = st.number_input("로스율(%)", value=5.0, format="%.1f") / 100
 with c4: admin_rate = st.number_input("관리비(%)", value=5.0, format="%.1f") / 100
 with c5: profit_rate = st.number_input("이윤(%)", value=10.0, format="%.1f") / 100
 st.write("---")
 
-# --- 4. 메인 입력창 (2번 요청 반영: 행 추가 시 '진양' 고정) ---
+# --- 4. 메인 입력창 (2번 요청 반영: 선택창 팝업 없이 '진양' 기본 입력) ---
 st.subheader("📝 산출 목록 입력")
 material_list = ["선택하세요"] + (sorted(sponge_db['재질'].unique().tolist()) if not sponge_db.empty else [])
 
-# 2번 요청 반영: default="진양" 설정을 통해 행 추가 시 자동 입력
+# 2번 요청 반영: num_rows="dynamic" 사용 시 새 행의 기본 데이터 구조를 정의
+new_row_template = {
+    "선택업체": "진양", 
+    "재질": "선택하세요", 
+    "재단방식": "일반", 
+    "W(사선)": None, "W": None, "D": None, "T": None
+}
+
+
+
 edited_df = st.data_editor(
     st.session_state.input_df,
     num_rows="dynamic",
     column_config={
-        "선택업체": st.column_config.SelectboxColumn("선택업체", options=["진양", "폼웍스"], required=True, default="진양"),
+        # '선택업체' 컬럼에 default를 설정하여 추가 시 창이 뜨지 않고 값이 바로 들어갑니다.
+        "선택업체": st.column_config.SelectboxColumn(
+            "선택업체", 
+            options=["진양", "폼웍스"], 
+            default="진양" 
+        ),
         "재질": st.column_config.SelectboxColumn("재질", options=material_list),
         "재단방식": st.column_config.SelectboxColumn("재단방식", options=["일반", "2D", "사선", "몰드"]),
         "W(사선)": st.column_config.NumberColumn("W(사선)", format="%.0f"),
@@ -76,7 +90,7 @@ edited_df = st.data_editor(
     key="main_editor"
 )
 
-# --- 5. 계산 엔진 (None 값 처리) ---
+# --- 5. 계산 엔진 (수식 로직) ---
 def calculate_row(row):
     if any(pd.isna(row[col]) for col in ["W", "D", "T"]) or row['재질'] == "선택하세요":
         return pd.Series(["-", "-", 0, 0, 0, 0], index=["밀도", "경도", "소요량(평)", "재료비", "가공비", "최종단가"])
@@ -91,6 +105,8 @@ def calculate_row(row):
     ws = float(row['W(사선)']) if not pd.isna(row['W(사선)']) else 0.0
     w, d, t = float(row['W']), float(row['D']), float(row['T'])
 
+    # 단가 계산 수식:
+    # $$Total = (MaterialCost + ProcessingCost + Expense) \times (1 + AdminRate) \times (1 + ProfitRate)$$
     af_qty = (((ws + w) * d * t) / vol_unit) / 2 if row['재단방식'] == "사선" else (w * d * t) / vol_unit
     ah_mat = af_qty * u_price if not is_jinyang else af_qty * (1.0 + loss_rate) * u_price
     
@@ -109,7 +125,7 @@ def calculate_row(row):
     return pd.Series([mat_info['밀도'].values[0], mat_info['경도'].values[0], round(af_qty, 3), round(ah_mat), round(ai_proc), final_p], 
                      index=["밀도", "경도", "소요량(평)", "재료비", "가공비", "최종단가"])
 
-# --- 6. 결과 출력 및 히스토리 저장 (명칭 수정 기능 포함) ---
+# --- 6. 결과 출력 및 히스토리 관리 ---
 st.divider()
 if st.button("🚀 최종 단가 산출하기"):
     results = edited_df.apply(calculate_row, axis=1)
@@ -122,11 +138,10 @@ if st.session_state.last_result is not None:
     st.subheader("📊 산출 결과 리스트")
     st.dataframe(st.session_state.last_result, use_container_width=True)
     
-    # 히스토리 저장 영역
     st.write("---")
     col_input, col_btn, col_down = st.columns([3, 1, 1])
     with col_input:
-        hist_name = st.text_input("저장할 히스토리 명칭", value=datetime.now().strftime("%m%d_%H%M"), help="원하는 명칭으로 수정 후 저장하세요.")
+        hist_name = st.text_input("저장할 히스토리 명칭", value=datetime.now().strftime("%m%d_%H%M"))
     with col_btn:
         if st.button("💾 히스토리에 저장"):
             st.session_state.calc_history[hist_name] = st.session_state.last_result
