@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import math
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP # 엑셀 방식 반올림을 위한 도구
 
 # --- 1. 기본 설정 및 데이터 로드 ---
 st.set_page_config(page_title="스펀지 단가 산출 TOOL", layout="wide")
@@ -13,6 +14,12 @@ st.markdown("""
     button[data-testid="stNumberInputStepUp"], button[data-testid="stNumberInputStepDown"] { display: none; }
     </style>
     """, unsafe_allow_html=True)
+
+# 엑셀식 반올림 함수 (사사오입)
+def excel_round(number, decimals=0):
+    if pd.isna(number): return 0
+    multiplier = 10 ** decimals
+    return int(Decimal(str(number * multiplier)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)) / multiplier
 
 @st.cache_data
 def load_data():
@@ -30,10 +37,9 @@ sponge_db = load_data()
 
 # --- 2. 상태 관리 ---
 if "input_df" not in st.session_state:
-    # 1번 요청: 초기값을 완전히 비워진(None) 상태로 시작
     st.session_state.input_df = pd.DataFrame([{
         "선택업체": "진양", "재질": "선택하세요", "재단방식": "일반",
-        "W(사선)": None, "W": None, "D": None, "T": None
+        "W(사선)": pd.NA, "W": pd.NA, "D": pd.NA, "T": pd.NA
     }])
 
 if "last_result" not in st.session_state:
@@ -42,7 +48,7 @@ if "last_result" not in st.session_state:
 if "calc_history" not in st.session_state:
     st.session_state.calc_history = {}
 
-# --- 3. 시스템 설정 (가로 배치) ---
+# --- 3. 시스템 설정 ---
 st.title("🧽 스펀지 단가 산출 TOOL")
 
 c1, c2, c3, c4, c5 = st.columns(5)
@@ -53,33 +59,32 @@ with c4: admin_rate = st.number_input("관리비(%)", value=5.0, format="%.1f") 
 with c5: profit_rate = st.number_input("이윤(%)", value=10.0, format="%.1f") / 100
 st.write("---")
 
-# --- 4. 메인 입력창 (2번 요청: 진양 자동 입력 및 선택창 팝업 억제) ---
-st.subheader("📝 목록 입력")
+# --- 4. 메인 입력창 ---
+st.subheader("📝 산출 목록 입력")
 material_list = ["선택하세요"] + (sorted(sponge_db['재질'].unique().tolist()) if not sponge_db.empty else [])
 
 edited_df = st.data_editor(
     st.session_state.input_df,
     num_rows="dynamic",
     column_config={
-        # 선택업체: default를 진양으로 하되, required=False로 설정하여 붉은 경고창 팝업을 억제합니다.
         "선택업체": st.column_config.SelectboxColumn("선택업체", options=["진양", "폼웍스"], default="진양", required=False),
         "재질": st.column_config.SelectboxColumn("재질", options=material_list),
         "재단방식": st.column_config.SelectboxColumn("재단방식", options=["일반", "2D", "사선", "몰드"]),
-        "W(사선)": st.column_config.NumberColumn("W(사선)", format="%.0f"),
-        "W": st.column_config.NumberColumn("W", format="%.0f"),
-        "D": st.column_config.NumberColumn("D", format="%.0f"),
-        "T": st.column_config.NumberColumn("T", format="%.0f"),
+        "W(사선)": st.column_config.NumberColumn("W(사선)", format="%d"),
+        "W": st.column_config.NumberColumn("W", format="%d"),
+        "D": st.column_config.NumberColumn("D", format="%d"),
+        "T": st.column_config.NumberColumn("T", format="%d"),
     },
     use_container_width=True,
     key="main_editor"
 )
 
-# --- 5. 계산 엔진 (엑셀 수식과 100% 동기화) ---
+# --- 5. 계산 엔진 (10원 단위 사사오입 적용) ---
 def calculate_row(row):
     if any(pd.isna(row[col]) for col in ["W", "D", "T"]) or row['재질'] == "선택하세요":
         return pd.Series(["-", "-", 0, 0, 0, 0], index=["밀도", "경도", "소요량(평)", "재료비", "가공비", "최종단가"])
     
-    vol_unit = 303 * 303 * 10
+    vol_unit = 30.3 * 30.3 * 10 # 엑셀과 동일한 볼륨 유닛
     mat_info = sponge_db[sponge_db['재질'] == row['재질']]
     if mat_info.empty: return pd.Series(["미등록", "-", 0, 0, 0, 0], index=["밀도", "경도", "소요량(평)", "재료비", "가공비", "최종단가"])
 
@@ -89,12 +94,11 @@ def calculate_row(row):
     ws = float(row['W(사선)']) if not pd.isna(row['W(사선)']) else 0.0
     w, d, t = float(row['W']), float(row['D']), float(row['T'])
 
-    # [핵심 수정] 엑셀 방식: 소요량(평)을 먼저 소수점 2자리에서 반올림함
+    # 단계별 엑셀식 반올림 적용
     af_qty_raw = (((ws + w) * d * t) / vol_unit) / 2 if row['재단방식'] == "사선" else (w * d * t) / vol_unit
-    af_qty = round(af_qty_raw, 2)
+    af_qty = excel_round(af_qty_raw, 2)
     
-    # 재료비: 반올림된 평수 기준 계산 (엑셀과 일치됨)
-    ah_mat = round(af_qty * u_price * (1.0 + (loss_rate if is_jinyang else 0)), 0)
+    ah_mat = excel_round(af_qty * u_price * (1.0 + (loss_rate if is_jinyang else 0)), 0)
     
     ai_proc = 0.0
     if row['재단방식'] == "2D": ai_proc = ah_mat * 0.2
@@ -102,12 +106,14 @@ def calculate_row(row):
         if row['재단방식'] == "일반": ai_proc = (w/1000 * d/1000 * h_cut) + (w/1000 * d/1000 * t * v_cut)
         elif row['재단방식'] == "사선": ai_proc = ((ws + w)/1000 * d/1000 * v_cut * t) + (w/1000 * d/1000 * h_cut)
 
-    aj_exp = round(ai_proc * 0.1, 0) # 경비
-    ak_admin = round((ah_mat + ai_proc + aj_exp) * admin_rate, 0) # 일반관리비
-    al_profit = round((ai_proc + aj_exp + ak_admin) * profit_rate, 0) # 이윤 (재료비 제외)
+    aj_exp = excel_round(ai_proc * 0.1, 2) # 경비
+    ak_admin = excel_round((ah_mat + ai_proc + aj_exp) * admin_rate, 2) # 일반관리비
+    al_profit = excel_round((ai_proc + aj_exp + ak_admin) * profit_rate, 2) # 이윤
     
     total = ah_mat + ai_proc + aj_exp + ak_admin + al_profit
-    final_p = math.floor(total/10)*10 if not is_jinyang else round(total/10)*10
+    
+    # [핵심] 최종단가 10원 단위 엑셀식 반올림 (ROUND(total, -1))
+    final_p = excel_round(total, -1)
     
     return pd.Series([mat_info['밀도'].values[0], mat_info['경도'].values[0], af_qty, int(ah_mat), int(ai_proc), int(final_p)], 
                      index=["밀도", "경도", "소요량(평)", "재료비", "가공비", "최종단가"])
@@ -122,7 +128,7 @@ if st.button("🚀 최종 단가 산출하기"):
     st.session_state.last_result = final_df
 
 if st.session_state.last_result is not None:
-    st.subheader("📊 결과 리스트")
+    st.subheader("📊 산출 결과 리스트")
     st.dataframe(st.session_state.last_result, use_container_width=True)
     
     st.write("---")
