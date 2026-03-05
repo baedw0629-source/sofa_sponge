@@ -15,11 +15,12 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 엑셀 방식 사사오입 함수 (10원 단위 등 정확한 오차 해결)
+# 엑셀 방식 사사오입 함수 (사선 10원 단위 등 모든 오차 해결)
 def excel_round(number, decimals=0):
-    if pd.isna(number): return 0
+    if pd.isna(number) or number is None: return 0
     multiplier = 10 ** decimals
-    return int(Decimal(str(number * multiplier)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)) / multiplier
+    # 엑셀의 ROUND 함수와 동일하게 0.5에서 올림 처리
+    return float(Decimal(str(float(number) * multiplier)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)) / multiplier
 
 # --- 2. 데이터 로드 및 상태 관리 ---
 @st.cache_data
@@ -37,10 +38,11 @@ def fetch_raw_data():
 if "master_db" not in st.session_state:
     st.session_state.master_db = fetch_raw_data()
 
+# [요청 1 반영] W, D, T를 완전히 비워진(None) 상태로 초기화
 if "input_df" not in st.session_state:
     st.session_state.input_df = pd.DataFrame([{
         "선택업체": "진양", "재질": "선택하세요", "재단방식": "일반",
-        "W(사선)": pd.NA, "W": pd.NA, "D": pd.NA, "T": pd.NA
+        "W(사선)": None, "W": None, "D": None, "T": None
     }])
 
 if "last_result" not in st.session_state:
@@ -55,12 +57,7 @@ tab1, tab2 = st.tabs(["🧽 단가 산출", "🗂️ 재질 DB 관리"])
 # --- [Tab 2: 재질 DB 관리] ---
 with tab2:
     st.subheader("📋 마스터 재질 리스트 관리")
-    edited_master = st.data_editor(
-        st.session_state.master_db,
-        num_rows="dynamic",
-        use_container_width=True,
-        key="master_db_editor"
-    )
+    edited_master = st.data_editor(st.session_state.master_db, num_rows="dynamic", use_container_width=True, key="master_db_editor")
     if st.button("💾 변경사항을 현재 계산기에 반영"):
         st.session_state.master_db = edited_master
         st.success("재질 정보가 업데이트되었습니다.")
@@ -80,15 +77,16 @@ with tab1:
     with c5: profit_rate = st.number_input("이윤(%)", value=10.0, format="%.1f") / 100
     st.write("---")
 
-    # [요청 2 반영] 문구 수정: 산출 목록 입력 -> 목록 입력
+    # [요청 2 반영] 목록 입력 문구 수정
     st.subheader("📝 목록 입력")
     material_list = ["선택하세요"] + sorted(st.session_state.master_db['재질'].unique().tolist())
 
+    # [요청 2 반영] 행 추가 시 선택창 팝업 억제 (default 설정 강화)
     edited_df = st.data_editor(
         st.session_state.input_df,
         num_rows="dynamic",
         column_config={
-            "선택업체": st.column_config.SelectboxColumn("선택업체", options=["진양", "폼웍스"], default="진양"),
+            "선택업체": st.column_config.SelectboxColumn("선택업체", options=["진양", "폼웍스"], default="진양", required=False),
             "재질": st.column_config.SelectboxColumn("재질", options=material_list),
             "재단방식": st.column_config.SelectboxColumn("재단방식", options=["일반", "2D", "사선", "몰드"]),
             "W(사선)": st.column_config.NumberColumn("W(사선)", format="%d"),
@@ -100,11 +98,13 @@ with tab1:
         key="main_editor"
     )
 
+    # [금액 오차 해결] 계산 엔진
     def calculate_row(row):
-        if any(pd.isna(row[col]) for col in ["W", "D", "T"]) or row['재질'] == "선택하세요":
+        if any(pd.isna(row[col]) or row[col] is None for col in ["W", "D", "T"]) or row['재질'] == "선택하세요":
             return pd.Series(["-", "-", 0, 0, 0, 0], index=["밀도", "경도", "소요량(평)", "재료비", "가공비", "최종단가"])
         
-        vol_unit = 918090 # 303 * 303 * 10
+        # 918090 단위 사용
+        vol_unit = 918090 
         mat_info = st.session_state.master_db[st.session_state.master_db['재질'] == row['재질']]
         if mat_info.empty: return pd.Series(["미등록", "-", 0, 0, 0, 0], index=["밀도", "경도", "소요량(평)", "재료비", "가공비", "최종단가"])
 
@@ -112,23 +112,28 @@ with tab1:
         u_price = float(mat_info['가공업체단가' if is_jinyang else '발포업체단가'].values[0])
         ws, w, d, t = float(row['W(사선)']) if not pd.isna(row['W(사선)']) else 0.0, float(row['W']), float(row['D']), float(row['T'])
 
-        af_qty = excel_round((((ws + w) * d * t) / vol_unit) / 2 if row['재단방식'] == "사선" else (w * d * t) / vol_unit, 2)
-        ah_mat = excel_round(af_qty * u_price * (1.0 + (loss_rate if is_jinyang else 0)), 0)
+        # [오차 해결 핵심] 내부적으로는 반올림 없이 전체 평수 사용 (27.23044582... 형태)
+        af_qty_internal = (((ws + w) * d * t) / vol_unit) / 2 if row['재단방식'] == "사선" else (w * d * t) / vol_unit
         
+        # 재료비: 평수 실제값 x 단가 x 로스 (이후 정수 반올림)
+        ah_mat = excel_round(af_qty_internal * u_price * (1.0 + (loss_rate if is_jinyang else 0)), 0)
+        
+        # 가공비
         ai_proc = 0.0
         if row['재단방식'] == "2D": ai_proc = ah_mat * 0.2
         elif is_jinyang:
             if row['재단방식'] == "일반": ai_proc = (w/1000 * d/1000 * h_cut) + (w/1000 * d/1000 * t * v_cut)
             elif row['재단방식'] == "사선": ai_proc = ((ws + w)/1000 * d/1000 * v_cut * t) + (w/1000 * d/1000 * h_cut)
 
+        # 경비, 관리비, 이윤 (엑셀 수식 동기화)
         aj_exp = excel_round(ai_proc * 0.1, 2)
-        ak_admin = excel_round((ah_mat + ai_proc + aj_exp) * admin_rate, 2)
-        al_profit = excel_round((ai_proc + aj_exp + ak_admin) * profit_rate, 2)
+        ak_admin = excel_round((ah_mat + ai_proc + aj_exp) * admin_rate, 0)
+        al_profit = excel_round((ai_proc + aj_exp + ak_admin) * profit_rate, 0)
         
         total = ah_mat + ai_proc + aj_exp + ak_admin + al_profit
-        final_p = excel_round(total, -1)
+        final_p = excel_round(total, -1) # 10원 단위 사사오입
         
-        return pd.Series([mat_info['밀도'].values[0], mat_info['경도'].values[0], af_qty, int(ah_mat), int(ai_proc), int(final_p)], 
+        return pd.Series([mat_info['밀도'].values[0], mat_info['경도'].values[0], excel_round(af_qty_internal, 2), int(ah_mat), int(ai_proc), int(final_p)], 
                          index=["밀도", "경도", "소요량(평)", "재료비", "가공비", "최종단가"])
 
     st.divider()
@@ -140,25 +145,24 @@ with tab1:
         st.session_state.last_result = final_df
 
     if st.session_state.last_result is not None:
-        # [요청 2 반영] 문구 수정: 산출 결과 리스트 -> 결과 리스트
+        # [요청 2 반영] 결과 리스트 문구 수정
         st.subheader("📊 결과 리스트")
         st.dataframe(st.session_state.last_result, use_container_width=True)
+        st.write("") 
         
-        st.write("") # 미세 여백 조절
-        
-        # [요청 3 반영] 히스토리 명칭, 저장 버튼, CSV 버튼을 동일 높이에 배치
+        # [요청 3 반영] 버튼 레이아웃 정렬
         col_name, col_hist, col_csv = st.columns([3, 1, 1])
         with col_name:
             hist_name = st.text_input("저장할 히스토리 명칭", value=datetime.now().strftime("%m%d_%H%M"), label_visibility="collapsed", placeholder="히스토리 명칭 입력")
         with col_hist:
             if st.button("💾 히스토리에 저장", use_container_width=True):
                 st.session_state.calc_history[hist_name] = st.session_state.last_result
-                st.success(f"'{hist_name}' 저장!")
+                st.success(f"'{hist_name}' 저장 완료!")
         with col_csv:
             csv_res = st.session_state.last_result.to_csv(index=True, index_label="No").encode('utf-8-sig')
             st.download_button("📥 결과 CSV 저장", data=csv_res, file_name=f"{hist_name}.csv", use_container_width=True)
 
-# --- 4. 사이드바 히스토리 (요청 1 반영: 심플 버전 복구) ---
+# --- 4. 사이드바 히스토리 ---
 st.sidebar.header("📁 계산 히스토리")
 if st.session_state.calc_history:
     sel_h = st.sidebar.selectbox("내역 선택", list(st.session_state.calc_history.keys())[::-1])
