@@ -79,6 +79,7 @@ tab1, tab2 = st.tabs(["🧽 단가 산출", "🗂️ 재질 DB 관리"])
 with tab2:
     st.subheader("📋 재질 DB")
     st.info("단가가 변경되는 경우, 행을 추가하여 신규 버전 및 단가 내용을 입력하세요.")
+        st.info("25.09: 진양 통합으로 인한 단가 인하 / 23.11: 제3유에프 단가 산정 시 사용")
     edited_master = st.data_editor(st.session_state.master_db, num_rows="dynamic", use_container_width=True)
     c1, c2 = st.columns(2)
     with c1:
@@ -158,4 +159,5 @@ with tab1:
         st.subheader("📊 결과 리스트")
         st.dataframe(st.session_state.last_result, use_container_width=True)
         # (히스토리 저장 및 CSV 다운로드 로직 동일)
+
 
