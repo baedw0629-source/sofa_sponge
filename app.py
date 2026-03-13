@@ -77,16 +77,16 @@ tab1, tab2 = st.tabs(["🧽 단가 산출", "🗂️ 재질 DB 관리"])
 
 # [Tab 2: DB 관리] 모든 버전의 데이터를 수정/추가합니다.
 with tab2:
-    st.subheader("📋 마스터 재질 리스트 관리 (전체 버전)")
-    st.info("새로운 단가가 나오면 기존 행을 지우지 말고, '버전' 이름만 바꿔서 새 행으로 추가하세요.")
+    st.subheader("📋 재질 DB")
+    st.info("단가가 변경되는 경우, 행을 추가하여 신규 버전 및 단가 내용을 입력하세요.")
     edited_master = st.data_editor(st.session_state.master_db, num_rows="dynamic", use_container_width=True)
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🚀 현재 계산기에 즉시 반영", use_container_width=True):
+        if st.button("🚀 현재 계산기에 반영 (임시)", use_container_width=True):
             st.session_state.master_db = edited_master
             st.success("반영되었습니다.")
     with c2:
-        if st.button("🌐 GitHub에 영구 저장 (Commit)", use_container_width=True):
+        if st.button("🌐 DB 저장", use_container_width=True):
             if update_github_file(edited_master.to_csv(index=False)):
                 st.success("GitHub 업데이트 성공!"); st.cache_data.clear()
             else: st.error("GitHub 업데이트 실패. Secrets를 확인하세요.")
@@ -158,3 +158,4 @@ with tab1:
         st.subheader("📊 결과 리스트")
         st.dataframe(st.session_state.last_result, use_container_width=True)
         # (히스토리 저장 및 CSV 다운로드 로직 동일)
+
