@@ -3,12 +3,12 @@ import pandas as pd
 import math
 import base64
 import requests
-import io # 엑셀 생성을 위해 필수
+import io
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 # --- 1. 기본 설정 및 유틸리티 ---
-st.set_page_config(page_title="스펀지 산출 TOOL", layout="wide")
+st.set_page_config(page_title="스펀지 단가 산출 TOOL", layout="wide")
 
 st.markdown("""
     <style>
@@ -18,7 +18,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 엑셀 방식 반올림/내림 함수
+# 엑셀 방식 사사오입/내림 함수
 def excel_round(number, decimals=0):
     if pd.isna(number) or number is None: return 0
     multiplier = 10 ** decimals
@@ -29,7 +29,7 @@ def excel_rounddown(number, decimals=0):
     multiplier = 10 ** decimals
     return math.floor(float(number) * multiplier) / multiplier
 
-# GitHub API 업데이트 함수
+# GitHub 파일 업데이트 함수
 def update_github_file(content):
     try:
         token = st.secrets["GITHUB_TOKEN"]
@@ -44,7 +44,7 @@ def update_github_file(content):
         return requests.put(url, headers=headers, json=data).status_code in [200, 201]
     except: return False
 
-# --- 2. 데이터 로드 (버전 관리 대응) ---
+# --- 2. 데이터 로드 로직 ---
 @st.cache_data
 def fetch_raw_data():
     for enc in ['utf-8-sig', 'cp949', 'euc-kr']:
@@ -71,13 +71,12 @@ if "last_result" not in st.session_state:
 if "calc_history" not in st.session_state:
     st.session_state.calc_history = {}
 
-# --- 3. 화면 구성 ---
+# --- 3. 상단 탭 구성 ---
 tab1, tab2 = st.tabs(["🧽 단가 산출", "🗂️ 재질 DB 관리"])
 
 # [Tab 2: DB 관리]
 with tab2:
     st.subheader("📋 재질 DB")
-    # 한 박스 안에 깔끔하게 안내 문구 통합
     st.info("""
     ✅ 단가가 변경되는 경우, 행을 추가하여 신규 버전 및 단가 내용을 입력하세요.
     
@@ -85,11 +84,10 @@ with tab2:
     - 25.09: 진양 통합으로 인한 단가 인하
     - 23.11: 제3유에프 단가 산정 시 사용
     """)
-    
     edited_master = st.data_editor(st.session_state.master_db, num_rows="dynamic", use_container_width=True)
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("🚀 현재 계산기에 즉시 반영 (임시)", use_container_width=True):
+        if st.button("🚀 현재 계산기에 반영 (임시)", use_container_width=True):
             st.session_state.master_db = edited_master
             st.success("반영되었습니다.")
     with c2:
@@ -108,5 +106,84 @@ with tab1:
     db_ver = st.session_state.master_db[st.session_state.master_db['버전'] == sel_ver]
     
     col_sys = st.columns(5)
+    # [에러 해결 구간] 괄호를 정확히 닫고 형식을 지정했습니다.
     h_cut = col_sys[0].number_input("수평재단비", value=21.0, format="%.1f")
-    v_cut = col_sys[1].number_input("수직재단비", value=11.0, format
+    v_cut = col_sys[1].number_input("수직재단비", value=11.0, format="%.1f")
+    loss = col_sys[2].number_input("로스율(%)", value=5.0) / 100
+    adm = col_sys[3].number_input("관리비(%)", value=5.0) / 100
+    pro = col_sys[4].number_input("이윤(%)", value=10.0) / 100
+    
+    st.subheader(f"📝 목록 입력 ({sel_ver} 기준)")
+    m_list = ["선택하세요"] + sorted(db_ver['재질'].dropna().unique().tolist())
+    edited_df = st.data_editor(
+        st.session_state.input_df, num_rows="dynamic", use_container_width=True,
+        column_config={
+            "선택업체": st.column_config.SelectboxColumn("선택업체", options=["진양", "폼웍스"], default="진양", required=False),
+            "재질": st.column_config.SelectboxColumn("재질", options=m_list),
+            "재단방식": st.column_config.SelectboxColumn("재단방식", options=["일반", "2D", "사선", "몰드"]),
+        },
+        key="main_editor"
+    )
+
+    def calc_engine(row):
+        if any(pd.isna(row[c]) or str(row[c]).strip() == "" for c in ["W", "D", "T"]) or row['재질'] == "선택하세요":
+            return pd.Series(["-", "-", 0, 0, 0, 0], index=["밀도", "경도", "소요량(평)", "재료비", "가공비", "최종단가"])
+        
+        m_info = db_ver[db_ver['재질'] == row['재질']]
+        if m_info.empty: return pd.Series(["-", "-", 0, 0, 0, 0], index=["밀도", "경도", "소요량(평)", "재료비", "가공비", "최종단가"])
+
+        is_foam = (row['선택업체'] == "폼웍스")
+        u_p = float(m_info['발포업체단가' if is_foam else '가공업체단가'].values[0])
+        ws, w, d, t = float(row.get('W(사선)', 0) or 0), float(row['W']), float(row['D']), float(row['T'])
+
+        # 엑셀 정밀도 합산 로직
+        af_q = (((ws + w) * d * t) / 918090) / 2 if row['재단방식'] == "사선" else (w * d * t) / 918090
+        ah_m = excel_round(excel_round(af_q * u_p, 0) * (1.0 + (0 if is_foam else loss)), 0)
+        
+        ai_p_r = 0.0
+        if row['재단방식'] == "2D": ai_p_r = ah_m * 0.2
+        elif not is_foam:
+            if row['재단방식'] == "일반": ai_p_r = (w/1000 * d/1000 * h_cut) + (w/1000 * d/1000 * t * v_cut)
+            elif row['재단방식'] == "사선": ai_p_r = ((ws + w)/1000 * d/1000 * v_cut * t) + (w/1000 * d/1000 * h_cut)
+        ai_p = excel_round(ai_p_r, 0)
+
+        aj_exp = ai_p * 0.1
+        ak_adm = (ah_m + ai_p + aj_exp) * adm
+        al_pro = (ai_p + aj_exp + ak_adm) * pro
+        total = ah_m + ai_p + aj_exp + ak_adm + al_pro
+        
+        final = excel_rounddown(total, -1) if is_foam else excel_round(total, -1)
+        
+        return pd.Series([m_info['밀도'].values[0], m_info['경도'].values[0], excel_round(af_q, 2), int(ah_m), int(ai_p), int(final)], 
+                         index=["밀도", "경도", "소요량(평)", "재료비", "가공비", "최종단가"])
+
+    if st.button("🚀 최종 단가 산출하기", use_container_width=True):
+        res = edited_df.apply(calc_engine, axis=1)
+        st.session_state.last_result = pd.concat([edited_df, res], axis=1)
+
+    if st.session_state.last_result is not None:
+        st.subheader("📊 결과 리스트")
+        st.dataframe(st.session_state.last_result, use_container_width=True)
+        st.write("") 
+        
+        col_n, col_h, col_c, col_e = st.columns([2.5, 1, 1, 1])
+        with col_n:
+            h_name = st.text_input("히스토리 명칭", value=datetime.now().strftime("%m%d_%H%M"), label_visibility="collapsed")
+        with col_h:
+            if st.button("💾 히스토리 저장", use_container_width=True):
+                st.session_state.calc_history[h_name] = st.session_state.last_result
+                st.success("저장 완료!")
+        with col_c:
+            csv = st.session_state.last_result.to_csv(index=True, index_label="No").encode('utf-8-sig')
+            st.download_button("📥 CSV 저장", data=csv, file_name=f"{h_name}.csv", use_container_width=True)
+        with col_e:
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                st.session_state.last_result.to_excel(writer, index=True, index_label="No", sheet_name='산출결과')
+            st.download_button("📈 엑셀 저장", data=output.getvalue(), file_name=f"{h_name}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+
+# --- 4. 사이드바 히스토리 ---
+st.sidebar.header("📁 계산 히스토리")
+if st.session_state.calc_history:
+    sel_h = st.sidebar.selectbox("내역 선택", list(st.session_state.calc_history.keys())[::-1])
+    if st.sidebar.button("📂 불러오기"): st.session_state.last_result = st.session_state.calc_history[sel_h]
