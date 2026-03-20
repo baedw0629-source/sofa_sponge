@@ -3,11 +3,12 @@ import pandas as pd
 import math
 import base64
 import requests
+import io
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 # --- 1. 기본 설정 및 유틸리티 ---
-st.set_page_config(page_title="스펀지 단가 산출 TOOL (v-Management)", layout="wide")
+st.set_page_config(page_title="스펀지 단가 산출 TOOL", layout="wide")
 
 st.markdown("""
     <style>
@@ -156,9 +157,39 @@ with tab1:
         st.session_state.last_result = pd.concat([edited_df, results], axis=1)
 
     if st.session_state.last_result is not None:
-        st.subheader("📊 결과 리스트")
-        st.dataframe(st.session_state.last_result, use_container_width=True)
-        # (히스토리 저장 및 CSV 다운로드 로직 동일)
-
+    st.subheader("📊 결과 리스트")
+    st.dataframe(st.session_state.last_result, use_container_width=True)
+    
+    st.write("") 
+    
+    # [개선] 버튼 레이아웃: 이름 입력 + 버튼 3개를 한 줄에 배치
+    col_name, col_hist, col_csv, col_excel = st.columns([2.5, 1, 1, 1])
+    
+    with col_name:
+        h_name = st.text_input("히스토리 명칭", value=datetime.now().strftime("%m%d_%H%M"), label_visibility="collapsed")
+    
+    with col_hist:
+        if st.button("💾 히스토리 저장", use_container_width=True):
+            st.session_state.calc_history[h_name] = st.session_state.last_result
+            st.success("저장 완료!")
+            
+    with col_csv:
+        csv_data = st.session_state.last_result.to_csv(index=True, index_label="No").encode('utf-8-sig')
+        st.download_button("📥 CSV 저장", data=csv_data, file_name=f"{h_name}.csv", use_container_width=True)
+        
+    with col_excel:
+        # 엑셀 파일 생성 로직
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            st.session_state.last_result.to_excel(writer, index=True, index_label="No", sheet_name='산출결과')
+        excel_data = output.getvalue()
+        
+        st.download_button(
+            label="📈 엑셀 저장",
+            data=excel_data,
+            file_name=f"{h_name}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
 
 
